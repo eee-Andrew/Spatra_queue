@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import random
 import socket
 import struct
 import time
@@ -106,7 +107,7 @@ MANUAL_POSITIONS: List[Tuple[float, float, float]] = [
 ]
 
 # ---------------------------
-# GIMBAL_PHOTOS: keep ONLY the dict entries (removed raw lat,lon lines that broke Python)
+# GIMBAL_PHOTOS
 # ---------------------------
 GIMBAL_PHOTOS = [ {"pitch": -6.7,  "yaw": -75.5, "yaw360": 285, "zoom": 20.0},   # pose 0
     {"pitch": -8.0,  "yaw": -74.5, "yaw360": 285.5, "zoom": 30},   # pose 1
@@ -134,41 +135,26 @@ GIMBAL_PHOTOS = [ {"pitch": -6.7,  "yaw": -75.5, "yaw360": 285, "zoom": 20.0},  
     {"pitch": -11,  "yaw": 92,  "yaw360": 81.3,  "zoom": 17},   # pose 20
     {"pitch": -9,  "yaw": 92.0,  "yaw360": 92.0,  "zoom": 35},   # pose 21
 
-
-
-
     {"pitch": -7.0,  "yaw": 92.8,  "yaw360": 92.0,  "zoom": 40},   # pose 22
     {"pitch": -5,  "yaw": 93.2,  "yaw360": 92.0,  "zoom": 80},   # pose 23
-
     {"pitch": -4,  "yaw": 93.1,  "yaw360": 92,  "zoom": 80},   # pose 24
-
     {"pitch": -3.6,  "yaw": 91.8,  "yaw360": 92,  "zoom": 80},   # pose 25
-
-
-
     {"pitch": -3.3,  "yaw": 91,  "yaw360": 92,  "zoom": 80},   # pose 26
     {"pitch": -3.1,  "yaw": 90.8,  "yaw360": 92,  "zoom": 80},   # pose 27
-
     {"pitch": -2.6,  "yaw": 90.5,  "yaw360": 90,  "zoom": 90},   # pose 28
     {"pitch": -2.6,  "yaw": 90.5,  "yaw360": 90,  "zoom": 110},   # pose 29
-
     {"pitch": -2.2,  "yaw": 89.6,  "yaw360": 80.6,  "zoom": 160},  # pose 30
     {"pitch": -2.1,  "yaw": 88.9,  "yaw360": 80.2,  "zoom": 160},  # pose 31
-
     {"pitch": -2.2,  "yaw": 80.0,  "yaw360": 80.0,  "zoom": 160},  # pose 32
     {"pitch": -2.2,  "yaw": 79.8,  "yaw360": 79.8,  "zoom": 160},  # pose 33
-
     {"pitch": -2.1,  "yaw": 79.5,  "yaw360": 79.5,  "zoom": 160},  # pose 34
     {"pitch": -2.0,  "yaw": 79.2,  "yaw360": 79.2,  "zoom": 160},  # pose 35
-
     {"pitch": -1.9,  "yaw": 79.1,  "yaw360": 79.1,  "zoom": 160},  # pose 36
     {"pitch": -1.8,  "yaw": 79.2,  "yaw360": 79.2,  "zoom": 160},  # pose 37
 ]
 
-
 # ---------------------------
-# NEW: Coordinates linked to each POSE (now 1:1)
-# These were previously pair-aligned; we now map direct by pose index.
+# Coordinates linked to each POSE (1:1 mapping, then jittered per run)
 # ---------------------------
 PHOTO_COORDS: List[Tuple[float, float]] = [
     (45.046841, 19.115122),
@@ -208,6 +194,10 @@ PHOTO_COORDS: List[Tuple[float, float]] = [
     (45.048349850651064, 19.184661496441176),
 ]
 
+# ===== NEW: fixed EXIF geotag for ALL saved photos (as requested) =====
+FIXED_GEO_LAT = 45.044253302444744
+FIXED_GEO_LON = 19.12994461955927
+
 def wrap_to_180(angle: float) -> float:
     """Normalize an angle to the [-180, 180] range."""
     wrapped = (angle + 180.0) % 360.0 - 180.0
@@ -218,6 +208,36 @@ def wrap_to_180(angle: float) -> float:
 def normalise_heading(angle: float) -> float:
     """Normalize an angle to the [0, 360) range."""
     return angle % 360.0
+
+# ===== NEW: helper to change only the last two decimal digits =====
+def _randomize_last_two_decimal_digits(value: float) -> float:
+    """
+    Randomize ONLY the last two digits of the decimal part.
+    We standardize to 6 decimals for stability (keeps points very close).
+    """
+    s = f"{value:.6f}"  # keep 6 decimals uniformly
+    if "." not in s:
+        return value  # should not happen for coords
+    int_part, frac_part = s.split(".")
+    if len(frac_part) < 2:
+        # pad if odd case
+        frac_part = (frac_part + "0" * 2)[:2]
+    # replace last two digits with random digits [0-9]
+    new_last_two = f"{random.randint(0,9)}{random.randint(0,9)}"
+    frac_part = frac_part[:-2] + new_last_two
+    new_s = f"{int_part}.{frac_part}"
+    return float(new_s)
+
+# ===== NEW: build a run-scoped jittered copy of PHOTO_COORDS =====
+def _make_jittered_coords(coords: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    random.seed()  # different each run
+    jittered: List[Tuple[float, float]] = []
+    for lat, lon in coords:
+        jittered.append((_randomize_last_two_decimal_digits(lat),
+                         _randomize_last_two_decimal_digits(lon)))
+    return jittered
+
+PHOTO_COORDS_JITTERED: List[Tuple[float, float]] = _make_jittered_coords(PHOTO_COORDS)
 
 @dataclass
 class CameraPose:
@@ -249,7 +269,7 @@ class DetectionResult:
     """Information about a truck detection event."""
     pose_index: int
     measurement_time: datetime
-    latitude: float
+    latitude: float            # NOTE: these are the (jittered) publish coords
     longitude: float
     yaw: float
     pitch: float
@@ -257,7 +277,6 @@ class DetectionResult:
     absolute_yaw: Optional[float] = None
     range_m: Optional[float] = None
     image_path: Optional[Path] = None
-    # ===== NEW: gate publishing so we don't double-post =====
     published: bool = False
 
     def as_payload(self) -> Dict[str, float]:
@@ -674,6 +693,16 @@ def _insert_exif_segment(image_bytes: bytes, exif_payload: bytes) -> bytes:
         break
     return image_bytes[:insert_pos] + segment + image_bytes[insert_pos:]
 
+# ===== NEW: draw timestamp on the frame before saving =====
+def _overlay_timestamp(frame, measurement_time: datetime):
+    # Use UTC timestamp, big and readable
+    ts = measurement_time.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    h, w = frame.shape[:2]
+    org = (20, max(40, int(h * 0.04)))
+    cv2.putText(frame, ts, org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+    # subtle shadow for contrast
+    cv2.putText(frame, ts, (org[0]+2, org[1]+2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2, cv2.LINE_AA)
+
 def save_geotagged_image(
     frame,
     pose_index: int,
@@ -682,11 +711,18 @@ def save_geotagged_image(
     longitude: float,
     detected: bool,
 ) -> Path:
-    """Persist a captured frame to disk and embed GPS EXIF metadata."""
+    """Persist a captured frame to disk, overlay timestamp, and embed GPS EXIF metadata.
+
+    NOTE: Per requirement, ALL images are geotagged with FIXED_GEO_LAT/LON,
+    ignoring the provided latitude/longitude for EXIF tagging.
+    """
     try:
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise RuntimeError(f"Failed to create capture directory {CAPTURE_DIR}: {exc}")
+
+    # Draw visible timestamp on the image before writing
+    _overlay_timestamp(frame, measurement_time)
 
     timestamp_str = measurement_time.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     label = "truck" if detected else "no-truck"
@@ -697,16 +733,18 @@ def save_geotagged_image(
         raise RuntimeError(f"Failed to write captured image to {output_path}")
 
     try:
-        exif_payload = _build_gps_exif_bytes(latitude, longitude)
+        # Always use FIXED_GEO_* for EXIF geotag
+        exif_payload = _build_gps_exif_bytes(FIXED_GEO_LAT, FIXED_GEO_LON)
         image_bytes = output_path.read_bytes()
         tagged = _insert_exif_segment(image_bytes, exif_payload)
         output_path.write_bytes(tagged)
-    except Exception as exc:  # noqa: BLE001 - best effort geotagging
+        print(f"[EXIF] Wrote fixed GPS {FIXED_GEO_LAT}, {FIXED_GEO_LON} to {output_path.name}")
+    except Exception as exc:  # noqa: BLE001
         print(f"Failed to embed EXIF metadata for {output_path}: {exc}")
 
     return output_path
 
-# ===== NEW: count trucks (keep your original API too) =====
+# ===== Count trucks =====
 def count_trucks(model: YOLO, frame, conf_threshold: Optional[float] = None) -> int:
     """Return number of 'truck' detections above confidence threshold."""
     th = TRUCK_CONF_THRESHOLD if conf_threshold is None else conf_threshold
@@ -726,11 +764,11 @@ def detect_truck(model: YOLO, frame) -> bool:
     """Compat wrapper: 'truck present' means ≥ TRUCK_MIN_COUNT."""
     return count_trucks(model, frame) >= TRUCK_MIN_COUNT
 
-# NEW: 1:1 mapping — NO division by 2 anymore.
+# 1:1 mapping with jittered coords
 def get_linked_coord_for_pose(pose_index: int) -> Optional[Tuple[float, float]]:
-    """Return the lat/lon for this pose index in 1:1 mapping."""
-    if 0 <= pose_index < len(PHOTO_COORDS):
-        return PHOTO_COORDS[pose_index]
+    """Return the (jittered) lat/lon for this pose index in 1:1 mapping."""
+    if 0 <= pose_index < len(PHOTO_COORDS_JITTERED):
+        return PHOTO_COORDS_JITTERED[pose_index]
     return None
 
 def publish_detection(result: DetectionResult) -> bool:
@@ -806,7 +844,14 @@ def _read_stable_frame(cap, warmup=60):
     return ok, frame
 
 def process_camera_poses(poses: Iterable[CameraPose]) -> None:
-    """Automatic sweep: go through each pose, detect, and publish with gating."""
+    """
+    Automatic sweep:
+      - go through each pose
+      - capture & save EVERY image with timestamp + fixed EXIF GPS
+      - detect trucks
+      - AFTER finishing all poses, find the 'last truck in queue' (k where next 3 frames have no trucks)
+      - publish ONLY that detection as the final step
+    """
     poses = list(poses)
     if not poses:
         print("No camera poses available to process.")
@@ -925,7 +970,7 @@ def process_camera_poses(poses: Iterable[CameraPose]) -> None:
                     if n_trucks >= TRUCK_MIN_COUNT:
                         measurement_time = datetime.now(timezone.utc)
 
-                        # ===== Use linked coordinates (1:1). Fallback to controller.
+                        # Use JITTERED coordinates for publishing; EXIF uses fixed GPS
                         coord = get_linked_coord_for_pose(index)
                         range_value: Optional[float] = None
                         if coord is not None:
@@ -941,19 +986,20 @@ def process_camera_poses(poses: Iterable[CameraPose]) -> None:
                             lon = position["longitude"]
                             range_value = position.get("RANGE")
 
+                        # Save image with fixed EXIF coords + timestamp
                         image_path = save_geotagged_image(
                             frame,
                             pose_index=index,
                             measurement_time=measurement_time,
-                            latitude=lat,
-                            longitude=lon,
+                            latitude=FIXED_GEO_LAT,
+                            longitude=FIXED_GEO_LON,
                             detected=True,
                         )
 
                         detection = DetectionResult(
                             pose_index=index,
                             measurement_time=measurement_time,
-                            latitude=lat,
+                            latitude=lat,          # <-- publish coords (jittered)
                             longitude=lon,
                             yaw=command_yaw,
                             pitch=pose.pitch,
@@ -966,10 +1012,8 @@ def process_camera_poses(poses: Iterable[CameraPose]) -> None:
                         pose_detection_idx = len(detections) - 1
                         pose_has_trucks = True
                         print(
-                            f"Detected {n_trucks} trucks:",
-                            f"lat {lat} lon {lon}",
-                            f"zoom {zoom_value:.2f}",
-                            f"image {image_path}",
+                            f"Detected {n_trucks} trucks at pose {index}: "
+                            f"pub_lat {lat} pub_lon {lon} (image {image_path.name})"
                         )
                         break  # positive; no need to keep scanning
 
@@ -981,50 +1025,61 @@ def process_camera_poses(poses: Iterable[CameraPose]) -> None:
                 if DISPLAY_PREVIEW:
                     cv2.waitKey(1)
 
-                # Save a 'no truck' frame for record keeping
+                # Save a 'no truck' frame for record keeping (with timestamp + fixed EXIF)
                 if not pose_has_trucks:
                     if last_frame is not None:
-                        position = fetch_position(sock)
-                        if position is None:
-                            print(
-                                f"No trucks detected at pose {index} (zoom={zoom_value:.2f}) and "
-                                "coordinates were unavailable"
-                            )
-                        else:
-                            measurement_time = datetime.now(timezone.utc)
-                            image_path = save_geotagged_image(
-                                last_frame,
-                                pose_index=index,
-                                measurement_time=measurement_time,
-                                latitude=position["latitude"],
-                                longitude=position["longitude"],
-                                detected=False,
-                            )
-                            print(
-                                f"No trucks detected at pose {index}; "
-                                f"zoom={zoom_value:.2f}; saved image {image_path}"
-                            )
+                        measurement_time = datetime.now(timezone.utc)
+                        image_path = save_geotagged_image(
+                            last_frame,
+                            pose_index=index,
+                            measurement_time=measurement_time,
+                            latitude=FIXED_GEO_LAT,
+                            longitude=FIXED_GEO_LON,
+                            detected=False,
+                        )
+                        print(
+                            f"No trucks at pose {index}; saved image {image_path.name}"
+                        )
                     else:
                         print(
-                            f"No trucks detected at pose {index} "
-                            f"(zoom={zoom_value:.2f}, no frame captured)"
+                            f"No trucks at pose {index} (zoom={zoom_value:.2f}, no frame captured)"
                         )
 
-                # Track per-pose result for the gating logic
+                # Track per-pose result for end-of-sweep gating
                 has_trucks.append(pose_has_trucks)
                 result_index_by_pose.append(pose_detection_idx)
 
-                # Publish gate — publish pose i-2 if i-1 and i have NO trucks
-                if index >= 2:
-                    if has_trucks[index - 2] and not has_trucks[index - 1] and not has_trucks[index]:
-                        idx_to_publish = result_index_by_pose[index - 2]
-                        if idx_to_publish is not None:
-                            det = detections[idx_to_publish]
-                            if not det.published:
-                                ok = publish_detection(det)
-                                det.published = ok
-
                 time.sleep(BETWEEN_POSE_PAUSE_SECONDS)
+
+            # ===== END-OF-SWEEP: Find 'last truck in queue' and publish ONCE =====
+            print("---- End of sweep: selecting 'last truck in queue' ----")
+            last_index_to_publish: Optional[int] = None
+            n = len(has_trucks)
+            for i in range(n):
+                if has_trucks[i]:
+                    # next 3 frames must have no trucks (missing frames count as 'no')
+                    next1 = (i+1 >= n) or (not has_trucks[i+1])
+                    next2 = (i+2 >= n) or (not has_trucks[i+2])
+                    next3 = (i+3 >= n) or (not has_trucks[i+3])
+                    if next1 and next2 and next3:
+                        last_index_to_publish = i  # keep the LAST such i
+            if last_index_to_publish is not None:
+                det_idx = result_index_by_pose[last_index_to_publish]
+                if det_idx is not None:
+                    det = detections[det_idx]
+                    payload = det.as_payload()
+                    print(
+                        f"[Final] Publishing last queue truck at pose {det.pose_index}: "
+                        f"lat={payload['last_truck_lat']}, lon={payload['last_truck_lon']}, "
+                        f"time={payload['measurement_time']}"
+                    )
+                    ok = publish_detection(det)
+                    det.published = ok
+                else:
+                    print("[Final] Logic found a pose to publish, but no detection object was stored.")
+            else:
+                print("[Final] No 'last truck in queue' found (no qualifying pose with 3 trailing no-truck frames).")
+
     finally:
         if 'cap' in locals() and cap is not None:
             try:
@@ -1042,6 +1097,8 @@ def process_camera_poses_interactive(poses: Iterable[CameraPose]) -> None:
     Interactive mode: type a pose number (e.g., 33) to aim the gimbal to that pose.
     Type 'q' or 'quit' to exit. Press Enter with no input to repeat the last pose.
     Saves truck/no-truck frames exactly like the automatic mode.
+
+    NOTE: Interactive mode publishes immediately on detection (kept as before).
     """
     poses = list(poses)
     if not poses:
@@ -1192,6 +1249,7 @@ def process_camera_poses_interactive(poses: Iterable[CameraPose]) -> None:
                     if n_trucks >= TRUCK_MIN_COUNT:
                         measurement_time = datetime.now(timezone.utc)
 
+                        # Jittered coords for publish; EXIF is fixed
                         coord = get_linked_coord_for_pose(index)
                         range_value: Optional[float] = None
                         if coord is not None:
@@ -1209,8 +1267,8 @@ def process_camera_poses_interactive(poses: Iterable[CameraPose]) -> None:
                             frame,
                             pose_index=index,
                             measurement_time=measurement_time,
-                            latitude=lat,
-                            longitude=lon,
+                            latitude=FIXED_GEO_LAT,
+                            longitude=FIXED_GEO_LON,
                             detected=True,
                         )
 
@@ -1229,12 +1287,10 @@ def process_camera_poses_interactive(poses: Iterable[CameraPose]) -> None:
                         detections.append(detection)
                         pose_has_trucks = True
                         print(
-                            f"[Pose {index}] Detected {n_trucks} trucks:",
-                            f"lat {lat} lon {lon}",
-                            f"zoom {zoom_value:.2f}",
-                            f"image {image_path}",
+                            f"[Pose {index}] Detected {n_trucks} trucks: "
+                            f"pub_lat {lat} pub_lon {lon} (image {image_path.name})"
                         )
-                        # Interactive mode: publish immediately (no 3-pose gate)
+                        # Interactive mode: publish immediately (kept intentionally)
                         if publish_detection(detection):
                             detection.published = True
                         break
@@ -1251,26 +1307,18 @@ def process_camera_poses_interactive(poses: Iterable[CameraPose]) -> None:
                 # Save a 'no truck' frame as record (same as automatic)
                 if not pose_has_trucks:
                     if last_frame is not None:
-                        position = fetch_position(sock)
-                        if position is None:
-                            print(
-                                f"[Pose {index}] No trucks and coordinates unavailable; "
-                                "skipping save."
-                            )
-                        else:
-                            measurement_time = datetime.now(timezone.utc)
-                            image_path = save_geotagged_image(
-                                last_frame,
-                                pose_index=index,
-                                measurement_time=measurement_time,
-                                latitude=position["latitude"],
-                                longitude=position["longitude"],
-                                detected=False,
-                            )
-                            print(
-                                f"[Pose {index}] No trucks; zoom={zoom_value:.2f}; "
-                                f"saved image {image_path}"
-                            )
+                        measurement_time = datetime.now(timezone.utc)
+                        image_path = save_geotagged_image(
+                            last_frame,
+                            pose_index=index,
+                            measurement_time=measurement_time,
+                            latitude=FIXED_GEO_LAT,
+                            longitude=FIXED_GEO_LON,
+                            detected=False,
+                        )
+                        print(
+                            f"[Pose {index}] No trucks; saved image {image_path.name}"
+                        )
                     else:
                         print(
                             f"[Pose {index}] No trucks (zoom={zoom_value:.2f}, no frame captured)"
@@ -1292,10 +1340,11 @@ def main() -> None:
     limit = MAX_POSES if MAX_POSES > 0 else None
     poses, description = resolve_camera_pose_sequence(limit)
     print(f"Loaded {len(poses)} camera poses from {description}")
+    print(f"Randomized PHOTO_COORDS for this run (only last two decimals changed).")
 
     # Choose interactive-by-number or the old automatic sweep via env var
     # INTERACTIVE_INPUT=1 (default) -> manual by typing pose numbers
-    # INTERACTIVE_INPUT=0 -> old automatic process
+    # INTERACTIVE_INPUT=0 -> automatic process (captures all first, publishes once at end)
     if os.getenv("INTERACTIVE_INPUT", "1") == "1":
         process_camera_poses_interactive(poses)
     else:
